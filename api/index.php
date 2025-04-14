@@ -1,197 +1,220 @@
 <?php
 
+require __DIR__ . '/../vendor/autoload.php';
+
+use GuzzleHttp\Client;
+use GuzzleHttp\Exception\RequestException;
+
+function create_guzzle_client() {
+    return new Client([
+        'timeout' => 10,
+        'headers' => [
+            'User-Agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+        ]
+    ]);
+}
+
 function fetch_and_parse_schedule() {
     try {
+        $client = create_guzzle_client();
         $ist_timezone = new DateTimeZone('Asia/Kolkata');
         $now = new DateTime('now', $ist_timezone);
         $current_time = $now->getTimestamp();
         $start_of_day = (clone $now)->setTime(0, 0, 0)->getTimestamp();
         $end_of_day = null;
+        
         $api_url = "https://gxr-cached.api.viewlift.com/graphql?extensions=" . urlencode('{"persistedQuery":{"version":1,"sha256Hash":"6c9b1f7ce2ea7748154db1d1ee7f9ec3b10d5832e454a88df8cea504d28c7594"}}') .
                    "&variables=" . urlencode('{"site":"gxr","limit":200,"offset":0,"startDate":' . $start_of_day . ',"endDate":' . ($end_of_day ?? 'null') . ',"sortBy":null,"sortOrder":null,"countryCode":"IN"}');
-        $ch = curl_init();
-        curl_setopt($ch, CURLOPT_URL, $api_url);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
-        $response = curl_exec($ch);
-        if (curl_errno($ch)) {
-            throw new Exception("Error fetching the API: " . curl_error($ch));
-        }
-        curl_close($ch);
-        $data = json_decode($response, true);
-        if (json_last_error() !== JSON_ERROR_NONE) {
-            throw new Exception("Error decoding JSON: " . json_last_error_msg());
-        }
-        $events = $data['data']['gameSchedule']['items'] ?? [];
-        $parsed_data = [];
-        foreach ($events as $event) {
-            $start_date = $event['schedules'][0]['startDate'] ?? null;
-            $end_date = $event['schedules'][0]['endDate'] ?? null;
-            if ($start_date >= $start_of_day) {
-                $parsed_event = [
-                    "title" => $event['title'] ?? null,
-                    "image_url" => $event['gist']['imageGist']['r16x9'] ?? null,
-                    "game_id" => $event['id'] ?? null,
-                    "home_team" => $event['homeTeam']['shortName'] ?? null,
-                    "away_team" => $event['awayTeam']['shortName'] ?? null,
-                    "schedule_start" => $start_date,
-                    "schedule_end" => $end_date,
-                    "broadcaster" => $event['broadcaster'] ?? null,
-                    "current_state" => $event['currentState'] ?? null
-                ];
-                if ($current_time > $end_date) {
-                    $parsed_event['current_state'] = "End";
-                }
-                if ($parsed_event['current_state'] === "default") {
-                    $parsed_event['current_state'] = "Coming Soon";
-                }
-                $parsed_data[] = $parsed_event;
+        
+        try {
+            $response = $client->get($api_url);
+            $data = json_decode($response->getBody(), true);
+            
+            if (json_last_error() !== JSON_ERROR_NONE) {
+                throw new Exception("Error decoding JSON: " . json_last_error_msg());
             }
-        }
-        $last_refresh_time = $now->format('d-m-Y h:i:s A');
-        usort($parsed_data, function ($a, $b) {
-            $status_order = ["live" => 1, "Coming Soon" => 2, "End" => 3];
-            $a_state = $a['current_state'] ?? "Coming Soon";
-            $b_state = $b['current_state'] ?? "Coming Soon";
-            if ($status_order[$a_state] !== $status_order[$b_state]) {
-                return $status_order[$a_state] <=> $status_order[$b_state];
+            
+            $events = $data['data']['gameSchedule']['items'] ?? [];
+            $parsed_data = [];
+            
+            foreach ($events as $event) {
+                $start_date = $event['schedules'][0]['startDate'] ?? null;
+                $end_date = $event['schedules'][0]['endDate'] ?? null;
+                
+                if ($start_date >= $start_of_day) {
+                    $parsed_event = [
+                        "title" => $event['title'] ?? null,
+                        "image_url" => $event['gist']['imageGist']['r16x9'] ?? null,
+                        "game_id" => $event['id'] ?? null,
+                        "home_team" => $event['homeTeam']['shortName'] ?? null,
+                        "away_team" => $event['awayTeam']['shortName'] ?? null,
+                        "schedule_start" => $start_date,
+                        "schedule_end" => $end_date,
+                        "broadcaster" => $event['broadcaster'] ?? null,
+                        "current_state" => $event['currentState'] ?? null
+                    ];
+                    
+                    if ($current_time > $end_date) {
+                        $parsed_event['current_state'] = "End";
+                    }
+                    if ($parsed_event['current_state'] === "default") {
+                        $parsed_event['current_state'] = "Coming Soon";
+                    }
+                    
+                    $parsed_data[] = $parsed_event;
+                }
             }
-            return $a['schedule_start'] <=> $b['schedule_start'];
-        });
+            
+            $last_refresh_time = $now->format('d-m-Y h:i:s A');
+            
+            usort($parsed_data, function ($a, $b) {
+                $status_order = ["live" => 1, "Coming Soon" => 2, "End" => 3];
+                $a_state = $a['current_state'] ?? "Coming Soon";
+                $b_state = $b['current_state'] ?? "Coming Soon";
+                if ($status_order[$a_state] !== $status_order[$b_state]) {
+                    return $status_order[$a_state] <=> $status_order[$b_state];
+                }
+                return $a['schedule_start'] <=> $b['schedule_start'];
+            });
+            
+            // Process live stream details for live events
+            $parsed_data = fetch_live_stream_details($parsed_data);
+            
+            $final_data = [
+                "last_refresh_time" => $last_refresh_time,
+                "author" => "@Darshan_101005",
+                "matches" => $parsed_data
+            ];
+            
+            return $final_data;
+            
+        } catch (RequestException $e) {
+            throw new Exception("Error fetching the API: " . $e->getMessage());
+        }
         
-        // Process live stream details for live events
-        $parsed_data = fetch_live_stream_details($parsed_data);
-        
-        $final_data = [
-            "last_refresh_time" => $last_refresh_time,
-            "author" => "@Darshan_101005",
-            "matches" => $parsed_data
-        ];
-        
-        return $final_data;
     } catch (Exception $e) {
         return ["error" => $e->getMessage()];
     }
 }
 
 function fetch_live_stream_details($parsed_data) {
+    $client = create_guzzle_client();
+    
     $headers = [
-        'accept: application/json, text/plain, */*',
-        'accept-language: en-US,en;q=0.9,ta;q=0.8',
-        'authorization: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhbm9ueW1vdXNJZCI6IjliOWNjN2MxODhmN2E5M2IwMzc3M2E2NzNkNTY5NTY0NWRlNDMxNzA4M2U2ZTRmNDY1OThiMGUxNjZiZDc2YjgiLCJjb3VudHJ5Q29kZSI6IklOIiwiZGV2aWNlSWQiOiJicm93c2VyLTgzODBiMDNkLTNiZGEtMGZiMS03ZmExLWExZmFmOTZhMTJmYiIsImV4cCI6MTc2NjIzODE1NywiaWF0IjoxNzM0NzAyMTU3LCJpZCI6ImJiZGViZTgzLTRiN2MtNGQzZC1iZGUzLWRiNjlhMzJkMmQxMiIsImlwYWRkcmVzcyI6IjE3MS43OS42MS4yMDgiLCJpcGFkZHJlc3NlcyI6IjE3MS43OS42MS4yMDgsMzQuNDkuMTAwLjIzNiwxMC4yMDIuMC43MyIsInBvc3RhbGNvZGUiOiI2MDAwNDIiLCJwcm92aWRlciI6InZpZXdsaWZ0Iiwic2l0ZSI6Imd4ciIsInNpdGVJZCI6ImJlMmYyNDlmLWUxNmUtNGFkOC05OGZiLTBkZWJlMmYzNDkyMyIsInVzZXJJZCI6ImJiZGViZTgzLTRiN2MtNGQzZC1iZGUzLWRiNjlhMzJkMmQxMiIsInVzZXJuYW1lIjoiYW5vbnltb3VzIn0.5aLwaSsEXrzOxuAZCeXUDymE-WWvyO3C_2k_tZh3nLM',
-        'origin: https://www.gxr.world',
-        'priority: u=1, i',
-        'referer: https://www.gxr.world/',
-        'sec-ch-ua: "Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
-        'sec-ch-ua-mobile: ?0',
-        'sec-ch-ua-platform: "Windows"',
-        'sec-fetch-dest: empty',
-        'sec-fetch-mode: cors',
-        'sec-fetch-site: cross-site',
-        'user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        'accept' => 'application/json, text/plain, */*',
+        'accept-language' => 'en-US,en;q=0.9,ta;q=0.8',
+        'authorization' => 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhbm9ueW1vdXNJZCI6IjliOWNjN2MxODhmN2E5M2IwMzc3M2E2NzNkNTY5NTY0NWRlNDMxNzA4M2U2ZTRmNDY1OThiMGUxNjZiZDc2YjgiLCJjb3VudHJ5Q29kZSI6IklOIiwiZGV2aWNlSWQiOiJicm93c2VyLTgzODBiMDNkLTNiZGEtMGZiMS03ZmExLWExZmFmOTZhMTJmYiIsImV4cCI6MTc2NjIzODE1NywiaWF0IjoxNzM0NzAyMTU3LCJpZCI6ImJiZGViZTgzLTRiN2MtNGQzZC1iZGUzLWRiNjlhMzJkMmQxMiIsImlwYWRkcmVzcyI6IjE3MS43OS42MS4yMDgiLCJpcGFkZHJlc3NlcyI6IjE3MS43OS42MS4yMDgsMzQuNDkuMTAwLjIzNiwxMC4yMDIuMC43MyIsInBvc3RhbGNvZGUiOiI2MDAwNDIiLCJwcm92aWRlciI6InZpZXdsaWZ0Iiwic2l0ZSI6Imd4ciIsInNpdGVJZCI6ImJlMmYyNDlmLWUxNmUtNGFkOC05OGZiLTBkZWJlMmYzNDkyMyIsInVzZXJJZCI6ImJiZGViZTgzLTRiN2MtNGQzZC1iZGUzLWRiNjlhMzJkMmQxMiIsInVzZXJuYW1lIjoiYW5vbnltb3VzIn0.5aLwaSsEXrzOxuAZCeXUDymE-WWvyO3C_2k_tZh3nLM',
+        'origin' => 'https://www.gxr.world',
+        'priority' => 'u=1, i',
+        'referer' => 'https://www.gxr.world/',
+        'sec-ch-ua' => '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+        'sec-ch-ua-mobile' => '?0',
+        'sec-ch-ua-platform' => '"Windows"',
+        'sec-fetch-dest' => 'empty',
+        'sec-fetch-mode' => 'cors',
+        'sec-fetch-site' => 'cross-site',
     ];
     
     foreach ($parsed_data as &$event) {
         if ($event['current_state'] === "live" && $event['game_id']) {
-            $params = [
-                'ids' => $event['game_id'],
-                'site' => 'gxr',
-            ];
-            $ch = curl_init();
-            curl_setopt($ch, CURLOPT_URL, 'https://gxr.api.viewlift.com/v3/content/game?' . http_build_query($params));
-            curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
-            curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
-            $response = curl_exec($ch);
-            if (curl_errno($ch)) {
-                continue; // Skip if error occurs
-            }
-            curl_close($ch);
-            $livestream_data = json_decode($response, true);
-            if (isset($livestream_data['records'][0]['livestreams'][0]['id'])) {
-                $event['livestream_id'] = $livestream_data['records'][0]['livestreams'][0]['id'];
-                $params = [
-                    'id' => $event['livestream_id'],
-                    'deviceType' => 'web_browser',
-                    'contentConsumption' => 'web',
-                ];
-                $ch = curl_init();
-                curl_setopt($ch, CURLOPT_URL, 'https://gxr.api.viewlift.com/entitlement/video/status?' . http_build_query($params));
-                curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
-                curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
-                $response = curl_exec($ch);
-                if (curl_errno($ch)) {
-                    continue; // Skip if error occurs
-                }
-                curl_close($ch);
-                $live_stream_data = json_decode($response, true);
-                if ($live_stream_data['success'] && isset($live_stream_data['video']['streamingInfo'])) {
-                    $widevine_details = $live_stream_data['video']['streamingInfo']['videoAssets']['widevine'];
-                    $event['mpd_url'] = $widevine_details['url'] ?? null;
-                    $event['lic_url'] = $widevine_details['licenseUrl'] ?? null;
-                    $event['lic_token'] = $widevine_details['licenseToken'] ?? null;
-                    $ch = curl_init();
-                    curl_setopt($ch, CURLOPT_URL, $event['mpd_url']);
-                    curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
-                    $mpd_response = curl_exec($ch);
-                    if (curl_errno($ch)) {
-                        continue; // Skip if error occurs
-                    }
-                    curl_close($ch);
-                    $xml = simplexml_load_string($mpd_response);
-                    $pssh = '';
-                    foreach ($xml->Period->AdaptationSet as $adaptationSet) {
-                        foreach ($adaptationSet->ContentProtection as $protection) {
-                            if ((string)$protection['schemeIdUri'] === 'urn:uuid:edef8ba9-79d6-4ace-a3c8-27dcd51d21ed') {
-                                $pssh = (string)$protection->pssh;
-                                break 2;
+            try {
+                // First request to get livestream ID
+                $response = $client->get('https://gxr.api.viewlift.com/v3/content/game', [
+                    'query' => [
+                        'ids' => $event['game_id'],
+                        'site' => 'gxr'
+                    ],
+                    'headers' => $headers
+                ]);
+                
+                $livestream_data = json_decode($response->getBody(), true);
+                
+                if (isset($livestream_data['records'][0]['livestreams'][0]['id'])) {
+                    $event['livestream_id'] = $livestream_data['records'][0]['livestreams'][0]['id'];
+                    
+                    // Second request to get stream details
+                    $response = $client->get('https://gxr.api.viewlift.com/entitlement/video/status', [
+                        'query' => [
+                            'id' => $event['livestream_id'],
+                            'deviceType' => 'web_browser',
+                            'contentConsumption' => 'web'
+                        ],
+                        'headers' => $headers
+                    ]);
+                    
+                    $live_stream_data = json_decode($response->getBody(), true);
+                    
+                    if ($live_stream_data['success'] && isset($live_stream_data['video']['streamingInfo'])) {
+                        $widevine_details = $live_stream_data['video']['streamingInfo']['videoAssets']['widevine'];
+                        $event['mpd_url'] = $widevine_details['url'] ?? null;
+                        $event['lic_url'] = $widevine_details['licenseUrl'] ?? null;
+                        $event['lic_token'] = $widevine_details['licenseToken'] ?? null;
+                        
+                        // Get MPD file
+                        $response = $client->get($event['mpd_url']);
+                        $mpd_response = $response->getBody()->getContents();
+                        
+                        $xml = simplexml_load_string($mpd_response);
+                        $pssh = '';
+                        
+                        foreach ($xml->Period->AdaptationSet as $adaptationSet) {
+                            foreach ($adaptationSet->ContentProtection as $protection) {
+                                if ((string)$protection['schemeIdUri'] === 'urn:uuid:edef8ba9-79d6-4ace-a3c8-27dcd51d21ed') {
+                                    $pssh = (string)$protection->pssh;
+                                    break 2;
+                                }
+                            }
+                        }
+                        
+                        $event['pssh'] = $pssh;
+                        
+                        if ($pssh) {
+                            $key_headers = [
+                                'accept' => 'application/json, text/plain, */*',
+                                'accept-language' => 'en-US,en;q=0.9,ta;q=0.8',
+                                'cache-control' => 'no-cache',
+                                'content-type' => 'application/json',
+                                'origin' => 'https://keydb.drmlive.net',
+                                'pragma' => 'no-cache',
+                                'priority' => 'u=1, i',
+                                'referer' => 'https://keydb.drmlive.net/',
+                                'sec-ch-ua' => '"Google Chrome";v="135", "Not-A.Brand";v="8", "Chromium";v="135"',
+                                'sec-ch-ua-mobile' => '?0',
+                                'sec-ch-ua-platform' => '"Windows"',
+                                'sec-fetch-dest' => 'empty',
+                                'sec-fetch-mode' => 'cors',
+                                'sec-fetch-site' => 'same-origin',
+                            ];
+                            
+                            $json_data = [
+                                'license' => $event['lic_url'],
+                                'headers' => 'x-axdrm-message: ' . $event['lic_token'],
+                                'pssh' => $event['pssh'],
+                                'buildInfo' => 'x86_64',
+                                'proxy' => '',
+                                'cache' => false,
+                            ];
+                            
+                            $response = $client->post('https://keydb.drmlive.net/wv', [
+                                'headers' => $key_headers,
+                                'json' => $json_data
+                            ]);
+                            
+                            $key_response = $response->getBody()->getContents();
+                            preg_match('/<li[^>]*>([a-f0-9]+:[a-f0-9]+)<\/li>/i', $key_response, $matches);
+                            
+                            if (!empty($matches[1])) {
+                                $event['clearkey_hex'] = $matches[1];
                             }
                         }
                     }
-                    $event['pssh'] = $pssh;
-                    if ($pssh) {
-                        $key_headers = [
-                            'accept: application/json, text/plain, */*',
-                            'accept-language: en-US,en;q=0.9,ta;q=0.8',
-                            'cache-control: no-cache',
-                            'content-type: application/json',
-                            'origin: https://keydb.drmlive.net',
-                            'pragma: no-cache',
-                            'priority: u=1, i',
-                            'referer: https://keydb.drmlive.net/',
-                            'sec-ch-ua: "Google Chrome";v="135", "Not-A.Brand";v="8", "Chromium";v="135"',
-                            'sec-ch-ua-mobile: ?0',
-                            'sec-ch-ua-platform: "Windows"',
-                            'sec-fetch-dest: empty',
-                            'sec-fetch-mode: cors',
-                            'sec-fetch-site: same-origin',
-                            'user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36',
-                        ];
-                        $json_data = [
-                            'license' => $event['lic_url'],
-                            'headers' => 'x-axdrm-message: ' . $event['lic_token'],
-                            'pssh' => $event['pssh'],
-                            'buildInfo' => 'x86_64',
-                            'proxy' => '',
-                            'cache' => false,
-                        ];
-                        $ch = curl_init();
-                        curl_setopt($ch, CURLOPT_URL, 'https://keydb.drmlive.net/wv');
-                        curl_setopt($ch, CURLOPT_POST, 1);
-                        curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($json_data));
-                        curl_setopt($ch, CURLOPT_HTTPHEADER, $key_headers);
-                        curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
-                        $key_response = curl_exec($ch);
-                        if (curl_errno($ch)) {
-                            continue; // Skip if error occurs
-                        }
-                        curl_close($ch);
-                        preg_match('/<li[^>]*>([a-f0-9]+:[a-f0-9]+)<\/li>/i', $key_response, $matches);
-                        if (!empty($matches[1])) {
-                            $event['clearkey_hex'] = $matches[1];
-                        }
-                    }
                 }
+            } catch (RequestException $e) {
+                // Skip this event if there's an error
+                continue;
             }
         }
+        
         if ($event['schedule_start'] && $event['schedule_end']) {
             $event['start_time'] = convert_unix_to_time_formats($event['schedule_start']);
             $event['end_time'] = convert_unix_to_time_formats($event['schedule_end']);
@@ -246,4 +269,3 @@ if (strpos($request_path, '/api/gxr_fixtures.json') !== false) {
     header('Content-Type: application/json');
     echo json_encode(["error" => "Invalid endpoint"], JSON_PRETTY_PRINT);
 }
-?>
