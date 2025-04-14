@@ -1,24 +1,23 @@
 {
-  "version": 2,
-  "routes": [
-    {
-      "src": "/api/gxr_fixtures.json",
-      "dest": "/api/index.php",
-      "headers": {
-        "Content-Type": "application/json"
-      }
-    },
-    {
-      "src": "/api/gxr_playlist.m3u",
-      "dest": "/api/index.php",
-      "headers": {
-        "Content-Type": "application/vnd.apple.mpegurl"
-      }
-    }
-  ],
-  "functions": {
-    "api/index.php": {
-      "runtime": "vercel-php@0.6.0"
-    }
-  }
+    "version": 2,
+    "builds": [
+        {
+            "src": "api/index.php",
+            "use": "vercel-php",
+            "config": {
+                "composerInstall": true,
+                "phpVersion": "8.0"
+            }
+        }
+    ],
+    "routes": [
+        {
+            "src": "/api/gxr_fixtures.json",
+            "dest": "/api/index.php"
+        },
+        {
+            "src": "/api/gxr_playlist.m3u",
+            "dest": "/api/index.php"
+        }
+    ]
 }
