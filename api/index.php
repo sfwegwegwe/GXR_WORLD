@@ -256,6 +256,10 @@ function generate_playlist_content($parsed_data) {
 // Main request handler
 $request_path = $_SERVER['REQUEST_URI'] ?? '';
 
+$data = fetch_and_parse_schedule();
+header('Content-Type: application/json');
+echo json_encode($data, JSON_PRETTY_PRINT);
+
 if (strpos($request_path, '/api/gxr_fixtures.json') !== false) {
     $data = fetch_and_parse_schedule();
     header('Content-Type: application/json');
