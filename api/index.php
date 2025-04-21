@@ -256,6 +256,26 @@ function generate_playlist_content($parsed_data) {
 // Main request handler
 $request_path = $_SERVER['REQUEST_URI'] ?? '';
 
+// Make sure no output happens before headers
+ob_start();
+
+if (strpos($request_path, '/api/gxr_fixtures.json') !== false) {
+    $data = fetch_and_parse_schedule();
+    header('Content-Type: application/json');
+    echo json_encode($data, JSON_PRETTY_PRINT);
+} elseif (strpos($request_path, '/api/gxr_playlist.m3u') !== false) {
+    $data = fetch_and_parse_schedule();
+    $playlist_content = generate_playlist_content($data['matches']);
+    header('Content-Type: application/vnd.apple.mpegurl');
+    echo $playlist_content;
+} else {
+    header('Content-Type: application/json');
+    echo json_encode(["error" => "Invalid endpoint"], JSON_PRETTY_PRINT);
+}
+
+// Flush the output buffer
+ob_end_flush();
+
 $data = fetch_and_parse_schedule();
 header('Content-Type: application/json');
 echo json_encode($data, JSON_PRETTY_PRINT);
